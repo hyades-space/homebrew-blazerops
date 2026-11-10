@@ -1,11 +1,11 @@
-# Homebrew formula for the BlazerOps CLI — lives in the tap repo
-# `hyades-space/homebrew-blazerops` (as `Formula/blazerops.rb`).
+# Homebrew formula for the BlazerOps CLI.
 #
 #   brew install hyades-space/blazerops/blazerops
 #
-# Binary-based: it downloads the same signed release binary the curl|sh installer uses,
-# pinned by sha256. The `version` + four `sha256` values are bumped per release (see
-# RELEASING.md — an automated PR from the release workflow).
+# Binary-based: it downloads the same release binary the curl | sh installer uses, from
+# https://blazerops.ai, pinned by sha256. `version` and the four `sha256` values are bumped by
+# .github/workflows/bump.yml: it opens a PR once https://blazerops.ai/latest/VERSION names a
+# newer release and every binary matches that release's SHA256SUMS.
 class Blazerops < Formula
   desc "Code-first pipeline authoring CLI for the BlazerOps platform"
   homepage "https://blazerops.ai"
@@ -39,6 +39,6 @@ class Blazerops < Formula
   end
 
   test do
-    assert_match "blazerops", shell_output("#{bin}/blazerops --version 2>&1", 0)
+    assert_match "blazerops #{version}", shell_output("#{bin}/blazerops --version")
   end
 end
