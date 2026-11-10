@@ -1,0 +1,109 @@
+name: bump
+
+# Bump Formula/blazerops.rb when https://blazerops.ai serves a newer release.
+#
+# blazerops-cli's release workflow mirrors each v* tag to https://blazerops.ai/v<version>/ and then
+# moves latest/VERSION. This tap holds no token for that repo and needs none: it reads the public
+# host, checks all four binaries against the release's SHA256SUMS, runs `brew style` and
+# `brew audit --strict` on the bumped formula, and opens a PR with this repo's own GITHUB_TOKEN.
+#
+# Hourly, and by hand (Actions → bump → Run workflow) right after a release. GitHub disables a
+# public repository's schedules after 60 days without activity: if a release gets no PR within
+# the hour, check that this workflow is enabled and run it by hand.
+#
+# blazerops.ai answers a missing key with 200 and the website's HTML, so a 200 proves nothing; the
+# script refuses anything but a release version, checksum lines, and binaries that match them.
+
+on:
+  schedule:
+    - cron: "41 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: bump
+  cancel-in-progress: false
+
+jobs:
+  # Read-only, every hour: is there a newer release, and no PR for it yet?
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      version: ${{ steps.latest.outputs.version }}
+      bump: ${{ steps.latest.outputs.newer == 'true' && steps.pr.outputs.exists == 'false' }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Is latest/VERSION newer than the formula?
+        id: latest
+        run: python3 .github/scripts/bump_formula.py check
+
+      - name: Is there a PR for it already?
+        id: pr
+        if: steps.latest.outputs.newer == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: bump/blazerops-${{ steps.latest.outputs.version }}
+        run: |
+          prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state all --json url --jq '.[].url')
+          if [ -n "$prs" ]; then
+            # Open: waiting for review. Closed without merging: someone decided against it; delete
+            # the branch to have this workflow try again.
+            echo "::notice::$BRANCH already has a PR: $prs"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Only when there is something to bump: verify, audit, open the PR.
+  bump:
+    needs: check
+    if: needs.check.outputs.bump == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # push bump/blazerops-<version>
+      pull-requests: write   # open its PR
+      actions: write         # start ci.yml on it: a PR opened with GITHUB_TOKEN triggers no workflow
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      BRANCH: bump/blazerops-${{ needs.check.outputs.version }}
+    steps:
+      # FIRST, and instead of actions/checkout: for a tap repo this action empties the workspace
+      # and re-creates it as the tapped repo at $GITHUB_SHA, so anything written before it is lost.
+      - name: Set up Homebrew (taps this repo)
+        uses: Homebrew/actions/setup-homebrew@63a2d4d8d4193eab3e62b1b782ff3ab8408f5b29 # main, 2026-11-06
+
+      - name: Verify the release and bump the formula
+        run: python3 .github/scripts/bump_formula.py bump "$VERSION" --summary "$RUNNER_TEMP/pr-body.md"
+
+      - name: brew style
+        run: brew style hyades-space/blazerops
+
+      - name: brew audit --strict
+        run: brew audit --strict --formula hyades-space/blazerops/blazerops
+
+      - name: Open the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git switch -c "$BRANCH"
+          git add Formula/blazerops.rb
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "blazerops $VERSION"
+          # bump/* branches belong to this workflow: a branch left by a run that failed before
+          # opening its PR is replaced.
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::$auth"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+              push --force "https://github.com/$GITHUB_REPOSITORY.git" "HEAD:refs/heads/$BRANCH"
+          gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
+            --title "blazerops $VERSION" --body-file "$RUNNER_TEMP/pr-body.md"
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+          cat "$RUNNER_TEMP/pr-body.md" >> "$GITHUB_STEP_SUMMARY"

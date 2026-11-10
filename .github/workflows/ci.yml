@@ -1,0 +1,43 @@
+name: ci
+
+# `brew style` and `brew audit --strict` on the formula, on Linux and macOS (its url and sha256
+# lines sit in on_linux / on_macos blocks), plus the bump script's tests.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # bump.yml starts this on its branch, because a PR it opens with GITHUB_TOKEN triggers no
+  # workflow by itself.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  formula:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      # No actions/checkout: for a tap repo this action checks out $GITHUB_SHA as the tap itself.
+      - name: Set up Homebrew (taps this repo)
+        uses: Homebrew/actions/setup-homebrew@63a2d4d8d4193eab3e62b1b782ff3ab8408f5b29 # main, 2026-11-06
+
+      - name: brew style
+        run: brew style hyades-space/blazerops
+
+      - name: brew audit --strict
+        run: brew audit --strict --formula hyades-space/blazerops/blazerops
+
+  bump-script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Tests for .github/scripts/bump_formula.py
+        run: python3 -m unittest discover -s tests -v
